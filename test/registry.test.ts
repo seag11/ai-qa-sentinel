@@ -1,56 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import { createNpmRegistry } from '../src/registry.js';
 
-function fakeFetch(routes: Record<string, { status: number; body?: unknown } | Error>) {
-  const calls: string[] = [];
-  const fetchImpl = (url: string): Promise<Response> => {
-    calls.push(url);
-    const route = routes[url];
-    if (route instanceof Error) return Promise.reject(route);
-    if (!route) return Promise.resolve(new Response(null, { status: 404 }));
-    return Promise.resolve(Response.json(route.body ?? {}, { status: route.status }));
+function fakeFetch(answer: (url: string) => Promise<Response>) {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fetchImpl = (url: string, init: RequestInit): Promise<Response> => {
+    calls.push({ url, init });
+    return answer(url);
   };
   return { fetchImpl, calls };
 }
 
+const status = (code: number) => () => Promise.resolve(new Response(null, { status: code }));
+
 describe('npm registry client', () => {
-  it('reads creation date and weekly downloads, encoding scoped names', async () => {
-    const { fetchImpl } = fakeFetch({
-      'https://registry.npmjs.org/@fastify%2Fcors': {
-        status: 200,
-        body: { time: { created: '2020-01-02T00:00:00.000Z' } },
-      },
-      'https://api.npmjs.org/downloads/point/last-week/@fastify/cors': {
-        status: 200,
-        body: { downloads: 1234 },
-      },
-    });
-    const result = await createNpmRegistry(fetchImpl).lookup('@fastify/cors');
-    expect(result).toEqual({
-      status: 'found',
-      info: { createdAt: new Date('2020-01-02T00:00:00.000Z'), weeklyDownloads: 1234 },
-    });
+  it('asks for the abbreviated document, encoding scoped names', async () => {
+    const { fetchImpl, calls } = fakeFetch(status(200));
+    expect(await createNpmRegistry(fetchImpl).lookup('@fastify/cors')).toBe('found');
+    expect(calls[0]?.url).toBe('https://registry.npmjs.org/@fastify%2Fcors');
+    expect(calls[0]?.init.headers).toEqual({ accept: 'application/vnd.npm.install-v1+json' });
   });
 
   it('reports a 404 as missing', async () => {
-    const { fetchImpl } = fakeFetch({});
-    expect(await createNpmRegistry(fetchImpl).lookup('ghost')).toEqual({ status: 'missing' });
+    const { fetchImpl } = fakeFetch(status(404));
+    expect(await createNpmRegistry(fetchImpl).lookup('ghost')).toBe('missing');
   });
 
-  it('reports network failures, server errors and odd metadata as unknown', async () => {
-    const { fetchImpl } = fakeFetch({
-      'https://registry.npmjs.org/offline': new Error('ENOTFOUND'),
-      'https://registry.npmjs.org/flaky': { status: 503 },
-      'https://registry.npmjs.org/odd': { status: 200, body: { time: 'yesterday' } },
-    });
-    const registry = createNpmRegistry(fetchImpl);
-    for (const name of ['offline', 'flaky', 'odd']) {
-      expect(await registry.lookup(name)).toEqual({ status: 'unknown' });
-    }
+  it('reports server errors and network failures as unknown', async () => {
+    expect(await createNpmRegistry(fakeFetch(status(503)).fetchImpl).lookup('a')).toBe('unknown');
+    const offline = fakeFetch(() => Promise.reject(new Error('ENOTFOUND')));
+    expect(await createNpmRegistry(offline.fetchImpl).lookup('a')).toBe('unknown');
   });
 
   it('asks the registry once per package', async () => {
-    const { fetchImpl, calls } = fakeFetch({});
+    const { fetchImpl, calls } = fakeFetch(status(404));
     const registry = createNpmRegistry(fetchImpl);
     await Promise.all([registry.lookup('ghost'), registry.lookup('ghost')]);
     expect(calls).toHaveLength(1);

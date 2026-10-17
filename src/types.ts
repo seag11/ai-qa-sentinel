@@ -1,9 +1,8 @@
-import type { Project, SourceFile } from 'ts-morph';
-
 export type Severity = 'error' | 'warning';
 
 export interface Finding {
-  readonly checkId: string;
+  /** The rule that produced it: `phantom-import`, or an ESLint rule id. */
+  readonly rule: string;
   /** Path relative to the scanned project's root, with forward slashes. */
   readonly file: string;
   readonly line: number;
@@ -12,25 +11,20 @@ export interface Finding {
   readonly message: string;
 }
 
-/** A published study that motivates a check. */
-export interface Evidence {
-  readonly citation: string;
-  readonly url: string;
-}
-
-/** The code being scanned: its TypeScript program plus what its package.json declares. */
+/** The project being scanned, as its tsconfig.json and package.json describe it. */
 export interface TargetProject {
   readonly root: string;
-  readonly ts: Project;
-  readonly sourceFiles: readonly SourceFile[];
+  /** Absolute paths of the TypeScript files to scan; declaration files are left out. */
+  readonly files: readonly string[];
   readonly packageName: string | undefined;
   /** Dependency name to version spec, across all dependency fields of package.json. */
   readonly dependencies: ReadonlyMap<string, string>;
+  /** Import patterns from tsconfig `paths`, such as `@/*`. */
+  readonly pathAliases: readonly string[];
 }
 
-export interface Check {
+/** Anything that reports findings: a built-in check or an adapter for an existing tool. */
+export interface FindingSource {
   readonly id: string;
-  readonly description: string;
-  readonly evidence: readonly Evidence[];
-  run(project: TargetProject): Promise<Finding[]>;
+  find(project: TargetProject): Promise<Finding[]>;
 }

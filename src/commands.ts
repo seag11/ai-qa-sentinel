@@ -1,16 +1,16 @@
 import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { createChecks } from './checks/index.js';
 import { loadTarget } from './project.js';
 import { createNpmRegistry, type PackageRegistry } from './registry.js';
 import { formatJson, formatText } from './report.js';
 import { scan } from './scan.js';
+import { createSources } from './sources/index.js';
 
 export const EXIT = { clean: 0, findings: 1, usage: 2 } as const;
 
 export const USAGE = `Usage: sentinel scan <path> [options]
 
-Report the bugs AI coding assistants are known to write in a TypeScript project.
+Collect findings for a TypeScript project from ESLint and Sentinel's own checks.
 
 Options:
   --offline     Skip npm registry lookups; phantom-import checks package.json only
@@ -57,9 +57,9 @@ export async function runCli(argv: readonly string[], io: CliIo): Promise<number
   }
 
   const registry = values.offline ? undefined : (io.registry ?? createNpmRegistry());
-  const checks = createChecks(registry ? { registry } : {});
-  const result = await scan(await loadTarget(target), checks);
+  const sources = createSources(registry ? { registry } : {});
+  const result = await scan(await loadTarget(target), sources);
 
-  io.write(values.json ? formatJson(result) : formatText(target, result, checks));
+  io.write(values.json ? formatJson(result) : formatText(target, result));
   return result.findings.length > 0 ? EXIT.findings : EXIT.clean;
 }

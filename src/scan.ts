@@ -1,18 +1,21 @@
-import type { Check, Finding, TargetProject } from './types.js';
+import type { Finding, FindingSource, TargetProject } from './types.js';
 
 export interface ScanResult {
   readonly findings: readonly Finding[];
   readonly durationMs: number;
 }
 
-/** Runs every check and returns findings grouped by check, then ordered by location. */
-export async function scan(project: TargetProject, checks: readonly Check[]): Promise<ScanResult> {
+/** Runs every source and returns findings grouped by source, then ordered by location. */
+export async function scan(
+  project: TargetProject,
+  sources: readonly FindingSource[],
+): Promise<ScanResult> {
   const started = performance.now();
-  const perCheck = await Promise.all(checks.map((check) => check.run(project)));
-  const findings = perCheck.flatMap((findings) =>
-    [...findings].sort(
-      (a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column,
-    ),
-  );
+  const perSource = await Promise.all(sources.map((source) => source.find(project)));
+  const findings = perSource.flatMap((findings) => [...findings].sort(byLocation));
   return { findings, durationMs: performance.now() - started };
+}
+
+function byLocation(a: Finding, b: Finding): number {
+  return a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column;
 }

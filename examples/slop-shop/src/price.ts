@@ -3,5 +3,6 @@
  * @param rate fraction off, e.g. 0.1 for 10% off
  */
 export function applyDiscount(price: number, rate: number): number {
-  return Math.round(price * (1 - rate) * 100) / 100;
+  const clamped = Math.min(Math.max(rate, 0), 1);
+  return Math.round(price * (1 - clamped) * 100) / 100;
 }

@@ -19,27 +19,41 @@ interface OrderRow {
 }
 
 export function registerOrderRoutes(app: FastifyInstance, db: DatabaseSync): void {
-  app.post('/orders', async (request, reply) => {
-    const { productId, quantity, coupon } = request.body as OrderRequest;
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId) as
-      | Product
-      | undefined;
-    if (!product) return reply.code(404).send({ error: 'Product not found' });
+  app.post<{ Body: OrderRequest }>(
+    '/orders',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          properties: {
+            productId: { type: 'integer' },
+            quantity: { type: 'integer', minimum: 1 },
+            coupon: { type: 'string' },
+          },
+          required: ['productId', 'quantity'],
+        },
+      },
+    },
+    async (request, reply) => {
+      const { productId, quantity, coupon } = request.body;
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId) as
+        Product | undefined;
+      if (!product) return reply.code(404).send({ error: 'Product not found' });
 
-    let total = product.price * quantity;
-    if (coupon) {
-      const match = db.prepare(`SELECT rate FROM coupons WHERE code = '${coupon}'`).get() as
-        | Pick<Coupon, 'rate'>
-        | undefined;
-      if (match) total = applyDiscount(total, match.rate);
-    }
+      let total = product.price * quantity;
+      if (coupon) {
+        const match = db.prepare('SELECT rate FROM coupons WHERE code = ?').get(coupon) as
+          Pick<Coupon, 'rate'> | undefined;
+        if (match) total = applyDiscount(total, match.rate);
+      }
 
-    reserveAll(db, [{ productId, quantity }]);
-    const result = db
-      .prepare('INSERT INTO orders (product_id, quantity, total, status) VALUES (?, ?, ?, ?)')
-      .run(productId, quantity, total, 'pending');
-    return reply.code(201).send({ id: Number(result.lastInsertRowid), total, status: 'pending' });
-  });
+      reserveAll(db, [{ productId, quantity }]);
+      const result = db
+        .prepare('INSERT INTO orders (product_id, quantity, total, status) VALUES (?, ?, ?, ?)')
+        .run(productId, quantity, total, 'pending');
+      return reply.code(201).send({ id: Number(result.lastInsertRowid), total, status: 'pending' });
+    },
+  );
 
   app.get<{ Params: { id: string } }>(
     '/orders/:id/receipt',
@@ -50,8 +64,7 @@ export function registerOrderRoutes(app: FastifyInstance, db: DatabaseSync): voi
     },
     async (request, reply) => {
       const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(request.params.id) as
-        | OrderRow
-        | undefined;
+        OrderRow | undefined;
       if (!order) return reply.code(404).send({ error: 'Order not found' });
       const text = `Order ${order.id}: ${order.quantity} x product ${order.product_id}, total ${order.total}`;
       return { receipt: encodeReceipt(text) };

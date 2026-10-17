@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { Project } from 'ts-morph';
+import ts from 'typescript';
 import { isRecord } from './guards.js';
 import type { TargetProject } from './types.js';
 
@@ -17,34 +17,22 @@ interface PackageManifest {
   readonly dependencies: ReadonlyMap<string, string>;
 }
 
-/** Loads a project from disk, using its tsconfig.json when it has one. */
+/** Loads a project from disk. Without a tsconfig.json, every TypeScript file outside node_modules is scanned. */
 export async function loadTarget(root: string): Promise<TargetProject> {
   const absoluteRoot = path.resolve(root);
-  const tsConfigFilePath = path.join(absoluteRoot, 'tsconfig.json');
-  const ts = existsSync(tsConfigFilePath)
-    ? new Project({ tsConfigFilePath })
-    : projectFromGlob(absoluteRoot);
+  const config = readTsConfig(absoluteRoot);
   const manifest = await readManifest(path.join(absoluteRoot, 'package.json'));
-  return createTarget(absoluteRoot, ts, manifest);
-}
 
-export function createTarget(root: string, ts: Project, manifest: PackageManifest): TargetProject {
-  const sourceFiles = ts
-    .getSourceFiles()
-    .filter(
-      (file) =>
-        !file.isDeclarationFile() && !file.isInNodeModules() && isInside(root, file.getFilePath()),
-    );
   return {
-    root,
-    ts,
-    sourceFiles,
+    root: absoluteRoot,
+    files: config.fileNames.filter((file) => !file.endsWith('.d.ts')),
     packageName: manifest.name,
     dependencies: manifest.dependencies,
+    pathAliases: Object.keys(config.options.paths ?? {}),
   };
 }
 
-/** Parses package.json text into the fields the checks care about. */
+/** Parses package.json text into the fields the sources care about. */
 export function parseManifest(text: string): PackageManifest {
   const parsed: unknown = JSON.parse(text);
   if (!isRecord(parsed)) return { name: undefined, dependencies: new Map() };
@@ -61,22 +49,15 @@ export function parseManifest(text: string): PackageManifest {
   return { name, dependencies };
 }
 
+function readTsConfig(root: string): ts.ParsedCommandLine {
+  const configPath = path.join(root, 'tsconfig.json');
+  const raw: unknown = existsSync(configPath)
+    ? ts.readConfigFile(configPath, (file) => ts.sys.readFile(file)).config
+    : {};
+  return ts.parseJsonConfigFileContent(raw, ts.sys, root);
+}
+
 async function readManifest(manifestPath: string): Promise<PackageManifest> {
   if (!existsSync(manifestPath)) return { name: undefined, dependencies: new Map() };
   return parseManifest(await readFile(manifestPath, 'utf8'));
-}
-
-function projectFromGlob(root: string): Project {
-  const ts = new Project({ compilerOptions: { strict: true, allowJs: false } });
-  ts.addSourceFilesAtPaths([
-    path.join(root, '**/*.{ts,tsx,mts,cts}'),
-    `!${path.join(root, '**/node_modules/**')}`,
-    `!${path.join(root, '**/dist/**')}`,
-  ]);
-  return ts;
-}
-
-function isInside(root: string, filePath: string): boolean {
-  const relative = path.relative(root, filePath);
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
 }

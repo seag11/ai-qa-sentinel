@@ -2,28 +2,38 @@ import { describe, expect, it } from 'vitest';
 import { EXIT, runCli, USAGE } from '../src/commands.js';
 import { fakeRegistry } from './helpers.js';
 
+const realPackages = [
+  'fastify',
+  '@types/node',
+  'typescript',
+  'vitest',
+  'tsx',
+  'eslint',
+  '@eslint/js',
+  'typescript-eslint',
+];
+
 async function cli(...argv: string[]): Promise<{ code: number; output: string }> {
   let output = '';
   const code = await runCli(argv, {
     write: (text) => (output += text),
-    registry: fakeRegistry({}),
+    registry: fakeRegistry(realPackages),
   });
   return { code, output };
 }
 
 describe('sentinel CLI', () => {
-  it('prints findings and the studies behind them, exiting 1', async () => {
+  it('prints one line per finding and a summary, exiting 1', async () => {
     const { code, output } = await cli('scan', 'examples/slop-shop');
     expect(code).toBe(EXIT.findings);
-    expect(output).toContain('POST /orders: no body schema; input reaches SQL');
+    expect(output).toMatch(/phantom-import\s+src\/pay\.ts:24\s+'stripe-helpers-pro' is not on npm/);
     expect(output).toMatch(/\d+ findings · \d+\.\ds/);
-    expect(output).toContain('Spracklen et al., Package Hallucinations, USENIX Security 2025');
   });
 
   it('prints JSON with --json', async () => {
     const { output } = await cli('scan', 'examples/slop-shop', '--json', '--offline');
-    const parsed = JSON.parse(output) as { findings: { checkId: string }[] };
-    expect(parsed.findings.map((finding) => finding.checkId)).toContain('unsafe-route');
+    const parsed = JSON.parse(output) as { findings: { rule: string }[] };
+    expect(parsed.findings.map((finding) => finding.rule)).toContain('phantom-import');
   });
 
   it('exits 0 for a clean project', async () => {

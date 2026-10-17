@@ -21,9 +21,6 @@
     "test:coverage": "vitest run --coverage",
     "selfscan": "tsx src/cli.ts scan ."
   },
-  "dependencies": {
-    "ts-morph": "^28.0.0"
-  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.5",
@@ -32,8 +29,10 @@
     "fastify": "^5.12.7",
     "prettier": "^3.9.10",
     "tsx": "^4.23.15",
-    "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "typescript": "^6.0.3"
   }
 }

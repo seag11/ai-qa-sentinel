@@ -11,8 +11,14 @@ export class OutOfStockError extends Error {
   }
 }
 
-/** Reserves stock for one product. Async so it can move to the warehouse API later. */
+/** Stand-in for the warehouse API, which will confirm stock levels remotely. */
+function confirmWithWarehouse(item: LineItem): Promise<LineItem> {
+  return Promise.resolve(item);
+}
+
+/** Reserves stock for one product. */
 export async function reserve(db: DatabaseSync, item: LineItem): Promise<void> {
+  await confirmWithWarehouse(item);
   const row = db.prepare('SELECT stock FROM products WHERE id = ?').get(item.productId) as
     | { stock: number }
     | undefined;

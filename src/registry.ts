@@ -1,48 +1,29 @@
-import { isRecord } from './guards.js';
-
-/** What the npm registry knows about a package, reduced to the signals phantom-import uses. */
-export interface PackageInfo {
-  readonly createdAt: Date;
-  readonly weeklyDownloads: number;
-}
-
-export type LookupResult =
-  | { readonly status: 'found'; readonly info: PackageInfo }
-  | { readonly status: 'missing' }
-  /** The registry could not be reached; the check stays silent rather than guessing. */
-  | { readonly status: 'unknown' };
+export type LookupResult = 'found' | 'missing' | 'unknown';
 
 export interface PackageRegistry {
+  /** `unknown` means the registry could not be reached; callers stay silent rather than guess. */
   lookup(name: string): Promise<LookupResult>;
 }
 
-type Fetch = (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 const REGISTRY_URL = 'https://registry.npmjs.org';
-const DOWNLOADS_URL = 'https://api.npmjs.org/downloads/point/last-week';
 const TIMEOUT_MS = 5_000;
 
 export function createNpmRegistry(fetchImpl: Fetch = fetch): PackageRegistry {
   const cache = new Map<string, Promise<LookupResult>>();
 
-  async function fetchJson(url: string): Promise<unknown> {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (response.status === 404) return undefined;
-    if (!response.ok) throw new Error(`${url} answered ${response.status}`);
-    return response.json();
-  }
-
   async function lookupUncached(name: string): Promise<LookupResult> {
-    const encoded = name.replace('/', '%2F');
     try {
-      const metadata = await fetchJson(`${REGISTRY_URL}/${encoded}`);
-      if (metadata === undefined) return { status: 'missing' };
-      const createdAt = readCreatedAt(metadata);
-      if (createdAt === undefined) return { status: 'unknown' };
-      const downloads = await fetchJson(`${DOWNLOADS_URL}/${name}`);
-      return { status: 'found', info: { createdAt, weeklyDownloads: readDownloads(downloads) } };
+      const response = await fetchImpl(`${REGISTRY_URL}/${name.replace('/', '%2F')}`, {
+        // The abbreviated document is a fraction of the full one; only the status matters here.
+        headers: { accept: 'application/vnd.npm.install-v1+json' },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (response.status === 404) return 'missing';
+      return response.ok ? 'found' : 'unknown';
     } catch {
-      return { status: 'unknown' };
+      return 'unknown';
     }
   }
 
@@ -56,14 +37,4 @@ export function createNpmRegistry(fetchImpl: Fetch = fetch): PackageRegistry {
       return pending;
     },
   };
-}
-
-function readCreatedAt(metadata: unknown): Date | undefined {
-  if (!isRecord(metadata) || !isRecord(metadata.time)) return undefined;
-  const created = metadata.time.created;
-  return typeof created === 'string' ? new Date(created) : undefined;
-}
-
-function readDownloads(body: unknown): number {
-  return isRecord(body) && typeof body.downloads === 'number' ? body.downloads : 0;
 }

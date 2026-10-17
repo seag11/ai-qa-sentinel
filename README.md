@@ -1,29 +1,32 @@
 # Sentinel
 
-> Catch the bugs AI writes. The AI suggests, the tests decide.
+> A test gate for AI code fixes. The AI suggests, the tests decide.
 
-Sentinel scans TypeScript, Node and Fastify code for the mistakes AI coding assistants are
-_measurably_ known to make. These are packages that don't exist, methods that don't exist,
-deprecated APIs, insecure routes and unfinished code. Each check is tied to a published study.
+Sentinel asks an LLM to fix code findings, then keeps a fix only if it clears a four-stage gate:
+types, a re-scan, the existing tests, and LLM-written edge-case tests. Its headline result is a
+measured **false-fix rate**: how often a fix that passes every check is still wrong.
 
-> **Status:** phase 1 of 3. The five rule checks and the demo app work. Coming next: the
-> LLM-powered `fix` command, where a patch is kept only if `tsc` and the tests pass, and the
-> `edge-case-probe` check. See [Roadmap](#roadmap).
+> **Status:** phase 1 of 3. `sentinel scan` works: it collects findings from ESLint plus one built-in
+> check. Coming next are the LLM `fix` command and the gate. See [Roadmap](#roadmap).
 
 ## Why
 
-AI-generated code tends to fail in the same few ways, and researchers have measured how often:
+AI-generated code fails in measured, repeatable ways. For example, at least 5.2% of
+commercial-model samples import a package that doesn't exist
+([Spracklen et al., USENIX Security 2025](https://www.usenix.org/conference/usenixsecurity25/presentation/spracklen)),
+and code that passes basic tests often breaks on edge cases
+([EvalPlus](https://arxiv.org/abs/2305.01210)). A fix written by the same models can repeat
+those failures, so Sentinel gates every fix instead of trusting it.
 
-| Check            | Catches                                                                   | Evidence                                                                                                                                                                                                                |
-| ---------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `phantom-import` | Packages that don't exist on npm, or aren't in package.json               | [Spracklen et al., USENIX Security 2025](https://www.usenix.org/conference/usenixsecurity25/presentation/spracklen): at least 5.2% of commercial-model samples import a package that doesn't exist                      |
-| `phantom-member` | `as any`, `@ts-ignore` and untyped JSON hiding invented methods           | [Tambon et al., 2024](https://arxiv.org/abs/2403.08937): "hallucinated object" and "wrong attribute" are among the top bug types                                                                                        |
-| `deprecated-api` | APIs whose typings say `@deprecated`, such as `new Buffer()`              | [Wang et al., ICSE 2025](https://arxiv.org/abs/2406.09834): LLMs often suggest deprecated APIs                                                                                                                          |
-| `unsafe-route`   | Fastify routes without a body schema, or input reaching SQL, HTML or logs | [Veracode 2025](https://www.veracode.com/press-release/ai-generated-code-poses-major-security-risks-in-nearly-half-of-all-development-tasks-veracode-research-reveals/): the insecure option was chosen in 45% of cases |
-| `sloppy-code`    | Floating promises, empty catches, identical branches, stubs, TODOs        | [Tambon et al., 2024](https://arxiv.org/abs/2403.08937): "silly mistake" and "incomplete code" categories                                                                                                               |
+## Prior art
 
-Most of these studies tested Python or several languages, not TypeScript specifically, and newer
-models may do better. The patterns still apply, though the rates will vary.
+Sentinel builds on existing tools rather than re-implementing them:
+
+| Job               | Existing tools                                                                                                                                                    | Sentinel's part                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Find bugs         | [typescript-eslint](https://typescript-eslint.io/rules/no-floating-promises/), [CodeQL](https://codeql.github.com/codeql-query-help/javascript/js-sql-injection/) | Reads ESLint's results, and adds one check ESLint can't do: packages missing from npm |
+| Suggest AI fixes  | [GitHub Copilot Autofix](https://docs.github.com/en/code-security/code-scanning/managing-code-scanning-alerts/responsible-use-autofix-code-scanning)              | Every fix must clear an automated gate before a person sees it                        |
+| Filter LLM output | [Meta's TestGen-LLM](https://arxiv.org/abs/2402.09171) keeps generated tests only if they build, pass and add coverage                                            | Applies the same filtering idea to fixes, and measures what slips through             |
 
 ## Quickstart
 
@@ -31,63 +34,64 @@ Requires Node 22.13+ and pnpm. Run `corepack enable` once to get the pinned pnpm
 
 ```sh
 pnpm install
-pnpm sentinel scan examples/slop-shop      # live npm lookups
-pnpm sentinel scan examples/slop-shop --offline --json
+pnpm sentinel scan examples/slop-shop             # checks package names against npm
+pnpm sentinel scan examples/slop-shop --offline   # package.json only, no network
+pnpm sentinel scan examples/slop-shop --json
 ```
 
 ```text
 sentinel scan examples/slop-shop
 
-  phantom-import  src/pay.ts:24     'stripe-helpers-pro' is not on npm
-  phantom-member  src/user.ts:10    'as any' hides call to user.fullName(), which does not exist on User
-  deprecated-api  src/files.ts:3    new Buffer() is deprecated: since v10.0.0 - Use Buffer.from(string[, encoding]) instead.
-  unsafe-route    src/orders.ts:22  POST /orders: no body schema; input reaches SQL
-  sloppy-code     src/stock.ts:28   promise from reserve() is never awaited; errors and ordering are lost
+  phantom-import                              src/pay.ts:24    'stripe-helpers-pro' is not on npm
+  @typescript-eslint/no-deprecated            src/files.ts:3   `Buffer` is deprecated. since v10.0.0 - Use `Buffer.from(string[, encoding])` instead.
+  @typescript-eslint/no-floating-promises     src/stock.ts:34  Promises must be awaited, ...
+  @typescript-eslint/no-unsafe-call           src/user.ts:10   Unsafe call of an `any` typed value.
+  @typescript-eslint/no-explicit-any          src/user.ts:10   Unexpected any. Specify a different type.
+  @typescript-eslint/no-unsafe-member-access  src/user.ts:10   Unsafe member access .fullName on an `any` value.
 
-5 findings · 0.9s
+6 findings · 1.2s
 ```
 
-Exit codes: `0` clean, `1` findings, `2` usage error, so the command can gate CI.
+Exit codes: `0` clean, `1` findings, `2` usage error.
 
 ## The demo app: slop-shop
 
 [`examples/slop-shop`](examples/slop-shop) is a small Fastify orders API written the way an AI
 assistant writes code. **It compiles and its tests pass** (`pnpm --filter slop-shop test`). It
-also hides a seeded bug for each check, including a sixth one (`applyDiscount(100, 1.5)` returns
-`-50`) that no rule can catch. That one is for the upcoming LLM-driven `edge-case-probe`.
+also has four seeded bugs: a package that doesn't exist, a call through `as any` to a method that
+doesn't exist, a deprecated `new Buffer()`, and a promise that is never awaited.
 
-The payment helper is a good example. The AI imported `stripe-helpers-pro`, which doesn't exist,
-then "fixed" the compiler error by adding a `declare module` shim. `tsc` is happy, and anyone who
-registers that name on npm gets their code run in your app. This attack is called
+The missing package is the interesting one. The AI imported `stripe-helpers-pro`, which isn't on
+npm, then made the compiler error go away by adding a `declare module` shim. `tsc` is happy. If
+anyone registers that name, their code runs in your app, an attack known as
 [slopsquatting](https://www.usenix.org/conference/usenixsecurity25/presentation/spracklen).
 
 ## How it works
 
 ```text
-scan ──▶ fix (LLM, phase 2) ──▶ verify: tsc + vitest on a copy ──▶ keep or drop the patch
+scan ──▶ fix (LLM) ──▶ gate, on a temp copy ──────────────────────────────▶ kept or rejected
+                       types · re-scan · existing tests · edge-case tests
 ```
 
-Each check is a single file that implements one interface:
+Findings come from any `FindingSource`:
 
 ```ts
-export interface Check {
+export interface FindingSource {
   readonly id: string;
-  readonly description: string;
-  readonly evidence: readonly Evidence[];
-  run(project: TargetProject): Promise<Finding[]>;
+  find(project: TargetProject): Promise<Finding[]>;
 }
 ```
 
-Checks work on the real TypeScript program through [ts-morph](https://ts-morph.com), so they can
-ask the type checker questions like "does `User` actually have `fullName`?". They don't just match
-text. Anything that touches the outside world, such as the npm registry, is passed in as an
-argument, so tests use fakes and never hit the network.
+Two exist today: `phantom-import`, which parses imports with the TypeScript compiler API and checks
+each package against package.json and the npm registry, and `eslint`, which runs the project's own
+ESLint with the JSON formatter. Anything that touches the outside world, such as the registry or a
+child process, is passed in as an argument, so tests use fakes.
 
 ## Development
 
 ```sh
-pnpm test            # unit tests: each check has bug cases plus clean look-alikes
-pnpm test:coverage   # CI enforces 90% line coverage for src/checks
+pnpm test            # unit and integration tests
+pnpm test:coverage   # CI enforces 90% line coverage for src/sources
 pnpm lint            # ESLint (strict type-checked) + Prettier
 pnpm typecheck
 pnpm selfscan        # Sentinel scans itself: must report 0 findings
@@ -95,17 +99,16 @@ pnpm selfscan        # Sentinel scans itself: must report 0 findings
 
 ## Roadmap
 
-1. **Scan** (done): repo, CI, strict TypeScript, five rule checks, slop-shop.
-2. **Fix and verify:** LLM client with an offline replay mode, a patch builder, a verifier that
-   runs `tsc` and `vitest` on a temp copy, and `edge-case-probe` (LLM-written fast-check properties).
-3. **Prove:** a labeled corpus of LLM-written code, and a `pnpm bench` that reports precision,
-   recall, fix acceptance and false-fix rate against a plain ESLint baseline.
+1. **Scan** (done): ESLint input, `phantom-import`, slop-shop, CI.
+2. **Fix and gate:** an LLM client with an offline replay mode, a patch builder, and three gate
+   stages (types, re-scan, existing tests). Exit: the demo shows one kept and one rejected fix
+   with no network.
+3. **Prove:** the edge-case stage (fast-check properties written without seeing the patch), a
+   corpus of about 30 samples with hidden tests, and `pnpm bench`, which reports the false-fix rate
+   with and without that stage.
 
 ## Limitations
 
-- TypeScript only. Route analysis understands Fastify, and the data-flow tracking stays within one
-  handler. It does not follow values across function calls.
-- `unsafe-route` trusts schemas it can't see (for example, one imported from another file). It
-  treats any function call as a possible sanitizer, so it favors precision over recall.
-- `phantom-import` can only flag new or rarely downloaded packages when it can reach the npm
-  registry. With `--offline`, it checks package.json only.
+- TypeScript only, and ESLint findings are only as good as the project's ESLint config.
+- With `--offline`, `phantom-import` checks package.json only. It can't tell whether a declared
+  package really exists on npm.
